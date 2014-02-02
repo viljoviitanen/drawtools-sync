@@ -18,7 +18,6 @@
 #    You should have received a copy of the GNU Affero General Public License
 #    along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-
 import webapp2
 import json
 import time
@@ -51,26 +50,169 @@ class RootHandler(webapp2.RequestHandler):
     self.response.write("""You are now logged in as %s.
 <p>Enter <input value="%s" readonly> as the sync server.
 <p><a href="%s">Sign out</a>""" %
-      (user.nickname(),self.request.path_url, users.create_logout_url('http://www.google.com/')))
+      (user.email(),self.request.path_url, users.create_logout_url('http://www.google.com/')))
+
+class TestHandler(webapp2.RequestHandler):
+  def get(self):
+
+    self.response.headers['Content-Type'] = 'text/html'   
+    user = users.get_current_user()
+    self.response.write("""
+<!--
+The following javascript example code here is public domain.
+-->
+You are now logged in as %s.
+<p>
+<script src='//ajax.googleapis.com/ajax/libs/jquery/2.0.3/jquery.min.js'></script>
+<script>
+function create() {
+  $('#item').html('Name: <input id=name value="New Drawing"></input> Content: <input id=content></input><input id=key type=hidden value="new"> <button onclick="save()">Save</button>')
+}
+
+function del() {
+  key=$('#key').val()
+  name=$('#name').val()
+  if (!confirm("Really delete " + escapehtml(name) + "?")) return
+  $.post('/delete',{'key':key},function(data) {
+    if(data.error) {
+       alert("Could not delete: "+data.error)
+       return
+    }
+    if(!data.key) {
+       alert("Could not delete")
+       return
+    }
+
+    alert("delete successful")
+    //reload...
+    list()
+    
+  })
+}
+
+function save() {
+  key=$('#key').val()
+  name=$('#name').val()
+  content=$('#content').val()
+  try {
+    obj=$.parseJSON(content)
+  } catch (e) {
+    obj=null
+  }
+  if (!obj) {
+    alert("content is not valid JSON")
+    return
+  }
+  $.post('/sync',{'key':key,'name':name,'content':content},function(data) {
+    if(data.error) {
+       alert("Could not sync data: "+data.error)
+       return
+    }
+    if(!data.content) {
+       alert("Could not sync data.")
+       return
+    }
+    if(!data.key) {
+       alert("Server did not return the key. What?!")
+       return
+    }
+
+    alert("save successful")
+    // save the key from the server, in case this was a new drawing!
+    $('#key').val(data.key)
+    
+  })
+}
+
+function load(key) {
+  $.getJSON('/load',{'key':key},function(data) {
+    if(data.error) {
+       alert("Could not load data: "+data.error)
+       return
+    }
+    if(!data.content) {
+       alert("Could not load data.")
+       return
+    }
+    if (!data.name) data.name="(unnamed)"
+    
+    $('#item').html('Name: <input id=name value="'+escapehtml(data.name)+'"></input> Content: <input id=content></input><input id=key type=hidden value="'+key+'"> <button onclick="save()">Save</button><button onclick="del()">Delete</button>')
+    $('#content').val(JSON.stringify(data.content))
+    
+  })
+}
+
+function list() {
+  $.getJSON('/list',function(data) {
+    if(!data.own) {
+       alert("Could not load data.")
+       return
+    }
+    own=data.own
+    shared=data.shared
+    init()
+  })
+}
+
+function init() {
+  s="My drawings:<br>"
+  for (i = 0; i < own.length; i++) {
+    name=own[i].name
+    if (!name) name="(unnamed)"
+    s+='<a href="javascript:load('+own[i].key+')">' + name + '</a><br>'
+  }
+  s+="Shared drawings:<br>"
+  for (i = 0; i < shared.length; i++) {
+    name=shared[i].name
+    if (!name) name="(unnamed)"
+    s+='<a href="javascript:load('+shared[i].key+')">' + name + '</a><br>'
+  }
+  $('#list').html(s)
+
+}
+
+function escapehtml(s) {
+  return String(s)
+    .replace(/&/g, '&amp;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
+</script>
+<button onclick="create()">Create new</button>
+<button onclick="list()">Get List</button>
+<div id=list></div>
+<div id=item></div>
+<hr>
+
+<p><a href="%s">Sign out</a>
+<!--
+public domain code ends.
+-->
+""" %
+      (user.email(), users.create_logout_url('http://www.google.com/')))
 
 class ListHandler(webapp2.RequestHandler):
   def get(self):
-    self.response.headers['Content-Type'] = 'text/plain'   
+    self.response.headers['Content-Type'] = 'application/json'   
     user = users.get_current_user()
-    mydrawings=Drawing.query(Drawing.owner==user.nickname()).fetch()
+    mydrawings=Drawing.query(Drawing.owner==user.email().lower()).fetch()
     debug(self,"my")
-    debug(self,pprint.pprint(mydrawings))
-    #XXX XXX XXX XXX XXX XXX
+    debug(self,pprint.pformat(mydrawings))
+    own=[]
     for dr in mydrawings:
-      self.response.write(dr.key.id())
-      self.response.write("\n")
+      own.append({'key':dr.key.id(),'name':dr.name})
       
-    otherdrawings=Drawing.query(Drawing.users==user.nickname())
-    debug(self,"others")
-    debug(self,pprint.pprint(otherdrawings))
-    for d in otherdrawings:
-      self.response.write(d.key.id())
-      self.response.write("\n")
+    shareddrawings=Drawing.query(Drawing.users==user.email().lower())
+    debug(self,"shared")
+    debug(self,pprint.pformat(shareddrawings))
+    shared=[]
+    for dr in shareddrawings:
+      shared.append({'key':dr.key.id(),'name':dr.name})
+    self.response.write(json.dumps({'own':own,'shared':shared}))
+      
 
 class LoadHandler(webapp2.RequestHandler):
   def get(self):
@@ -81,46 +223,70 @@ class LoadHandler(webapp2.RequestHandler):
     if not obj:
       self.response.write('{"error":"not found"}')
     else:
-      if user.nickname()==obj.owner or user.nickname() in obj.users:
-        self.response.write('{"content":%s}'%obj.content)
+      if user.email().lower()==obj.owner or user.email().lower() in obj.users:
+        self.response.write('{"key":%s,"content":%s,"name":%s}'%(self.request.GET['key'],obj.content,json.dumps(obj.name)))
       else:
         self.response.write('{"error":"no access"}')
         
 
 class SyncHandler(webapp2.RequestHandler):
-  def get(self):
+  def post(self):
     self.response.headers['Content-Type'] = 'application/json'   
     user = users.get_current_user()
     try:
-      newname=self.request.GET['name']
+      newname=self.request.POST['name']
     except KeyError:
       newname=''
     try:
-      newusers=json.loads(self.request.GET['users'])
+      newusers=json.loads(self.request.POST['users'])
     except KeyError:
       newusers=[]
-    newcontent=self.request.GET['content']
+    newcontent=self.request.POST['content']
 
-    k=self.request.GET['key']
+    k=self.request.POST['key']
+    debug(self,"sync")
+    debug(self,pprint.pformat(k))
+    debug(self,pprint.pformat(newcontent))
+    debug(self,pprint.pformat(newusers))
+    debug(self,pprint.pformat(newname))
     if k=="new":
-      obj=Drawing(name=newname,owner=user.nickname(),users=newusers,content=newcontent)
+      obj=Drawing(name=newname,owner=user.email().lower(),users=newusers,content=newcontent)
       key=obj.put()
-      self.response.write('{"content":%s,"key":"%s"}'%(obj.content,obj.key))
+      self.response.write('{"content":%s,"key":"%s"}'%(obj.content,obj.key.id()))
     else:
       key=ndb.Key('Drawing', int(k))
       obj=key.get()
       if not obj:
         self.response.write('{"error":"not found"}')
-      if user.nickname()==obj.owner or user.nickname() in obj.users:
-        self.response.write('{"content":%s}'%obj.content)
-	return
+      if user.email().lower()==obj.owner or user.email().lower() in obj.users:
+	pass
       else:
         self.response.write('{"error":"no access"}')
 	return
       obj.content=newcontent
       obj.users=newusers
+      obj.name=newname
       obj.put()
-      self.response.write('{"content":%s,"key":"%s"}'%(obj.content,obj.key))
+      self.response.write('{"content":%s,"key":"%s"}'%(obj.content,obj.key.id()))
+
+class DeleteHandler(webapp2.RequestHandler):
+  def post(self):
+    self.response.headers['Content-Type'] = 'application/json'   
+    user = users.get_current_user()
+    k=self.request.POST['key']
+    debug(self,"delete")
+    debug(self,pprint.pformat(k))
+    key=ndb.Key('Drawing', int(k))
+    obj=key.get()
+    if not obj:
+      self.response.write('{"error":"not found"}')
+    if user.email().lower()==obj.owner:
+      pass
+    else:
+      self.response.write('{"error":"no access"}')
+      return
+    key.delete()
+    self.response.write('{"key":"%s"}'%(obj.key.id()))
 
 debugstate = os.environ.get('SERVER_SOFTWARE', '').startswith('Dev')
 
@@ -128,5 +294,7 @@ app = webapp2.WSGIApplication(routes=[
     ('/list', ListHandler),
     ('/load', LoadHandler),
     ('/sync', SyncHandler),
+    ('/delete', DeleteHandler),
+    ('/test', TestHandler),
     ('/', RootHandler),
 ], debug=debugstate)

@@ -3,4 +3,7 @@ drawtools-sync
 
 IITC drawtools plugin sync server for google appengine.
 
-WORK IN PROGRESS - NOT WORKING YET
+Example dummy/proof of concept ui is included.
+
+TODO: integrate in draw tools ui.
+
