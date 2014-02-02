@@ -42,26 +42,40 @@ def debug(self,s):
   if self.app.debug:
     logging.debug(s)
 
-class RootHandler(webapp2.RequestHandler):
+class LogoutHandler(webapp2.RequestHandler):
   def get(self):
+    self.response.headers['Content-Type'] = 'text/html'   
+    self.response.write("You have logged out.")
+
+class LoginHandler(webapp2.RequestHandler):
+  def get(self):
+    user = users.get_current_user()
 
     self.response.headers['Content-Type'] = 'text/html'   
-    user = users.get_current_user()
     self.response.write("""You are now logged in as %s.
-<p>Enter <input value="%s" readonly> as the sync server.
+<p><tt>%s</tt> is the sync server.
 <p><a href="%s">Sign out</a>""" %
-      (user.email(),self.request.path_url, users.create_logout_url('http://www.google.com/')))
+      (user.email(),self.request.host_url, users.create_logout_url(self.request.host_url+'/logout')))
 
 class TestHandler(webapp2.RequestHandler):
   def get(self):
+    key=ndb.Key('Session', int(self.request.cookies.get('auth')))
+    obj=key.get()
+    if not obj:
+      self.response.headers['Content-Type'] = 'text/html'   
+      self.response.write('Please <a href="/login">log in</a> first.')
+      return
+    email=obj.email
 
-    self.response.headers['Content-Type'] = 'text/html'   
-    user = users.get_current_user()
     self.response.write("""
 <!--
 The following javascript example code here is public domain.
 -->
 You are now logged in as %s.
+<p>
+<!-- XXX -->
+<h1>NOT WORKING CURRENTLY</h1>
+This needs to be converted to use jsonp.
 <p>
 <script src='//ajax.googleapis.com/ajax/libs/jquery/2.0.3/jquery.min.js'></script>
 <script>
@@ -145,7 +159,10 @@ function load(key) {
 }
 
 function list() {
-  $.getJSON('/list',function(data) {
+  $.ajax({
+  dataType: "jsonp",
+  url: '/list',
+  success: function(data) {
     if(!data.own) {
        alert("Could not load data.")
        return
@@ -153,6 +170,7 @@ function list() {
     own=data.own
     shared=data.shared
     init()
+  }
   })
 }
 
@@ -187,111 +205,137 @@ function escapehtml(s) {
 <button onclick="list()">Get List</button>
 <div id=list></div>
 <div id=item></div>
-<hr>
 
-<p><a href="%s">Sign out</a>
 <!--
 public domain code ends.
 -->
-""" %
-      (user.email(), users.create_logout_url('http://www.google.com/')))
+""" % email )
+def wrapwrite(self,json):
+  self.response.write(self.request.GET['callback']+"("+json+")")
 
 class ListHandler(webapp2.RequestHandler):
   def get(self):
-    self.response.headers['Content-Type'] = 'application/json'   
+    self.response.headers['Content-Type'] = 'application/javascript'
     user = users.get_current_user()
-    mydrawings=Drawing.query(Drawing.owner==user.email().lower()).fetch()
+    if not user:
+      wrapwrite(self,json.dumps({'error':'not logged in at the sync server'}))
+      return
+    email=user.email().lower()
+    mydrawings=Drawing.query(Drawing.owner==email).fetch()
     debug(self,"my")
     debug(self,pprint.pformat(mydrawings))
     own=[]
     for dr in mydrawings:
       own.append({'key':dr.key.id(),'name':dr.name})
       
-    shareddrawings=Drawing.query(Drawing.shared==user.email().lower())
+    shareddrawings=Drawing.query(Drawing.shared==email)
     debug(self,"shared")
     debug(self,pprint.pformat(shareddrawings))
     shared=[]
     for dr in shareddrawings:
       shared.append({'key':dr.key.id(),'name':dr.name})
-    self.response.write(json.dumps({'own':own,'shared':shared}))
+    wrapwrite(self,json.dumps({'own':own,'shared':shared}))
       
 
 class LoadHandler(webapp2.RequestHandler):
   def get(self):
-    self.response.headers['Content-Type'] = 'application/json'   
+    self.response.headers['Content-Type'] = 'application/javascript'
     user = users.get_current_user()
+    if not user:
+      wrapwrite(self,json.dumps({'error':'not logged in at the sync server'}))
+      return
+    email=user.email().lower()
     key=ndb.Key('Drawing', int(self.request.GET['key']))
     obj=key.get()
     if not obj:
-      self.response.write('{"error":"not found"}')
+      wrapwrite(self,json.dumps({'error':'not found'}))
     else:
-      if user.email().lower()==obj.owner or user.email().lower() in obj.shared:
-        self.response.write('{"key":%s,"content":%s,"name":%s,"shared":%s}'%(self.request.GET['key'],obj.content,json.dumps(obj.name),json.dumps(obj.shared)))
+      if email==obj.owner or email in obj.shared:
+        wrapwrite(self,'{"key":%s,"content":%s,"name":%s,"shared":%s}'%(self.request.GET['key'],obj.content,json.dumps(obj.name),json.dumps(obj.shared)))
       else:
-        self.response.write('{"error":"no access"}')
+        wrapwrite(self,json.dumps({'error':'no access'}))
         
 
 class SyncHandler(webapp2.RequestHandler):
-  def post(self):
-    self.response.headers['Content-Type'] = 'application/json'   
+  #cross domain issue, cannot be a post.
+  def get(self):
+    self.response.headers['Content-Type'] = 'application/javascript'
     user = users.get_current_user()
+    if not user:
+      wrapwrite(self,json.dumps({'error':'not logged in at the sync server'}))
+      return
+    email=user.email().lower()
     try:
-      newname=self.request.POST['name']
+      newname=self.request.GET['name']
     except KeyError:
       newname=''
     try:
-      newusers=json.loads(self.request.POST['shared'])
+      newusers=json.loads(self.request.GET['shared'])
     except KeyError:
       newusers=[]
     except ValueError:
-      self.response.write('{"error":"invalid shared list"}')
+      wrapwrite(self,'{"error":"invalid shared list"}')
       return
-    newcontent=self.request.POST['content']
+    try:
+      newcontent=self.request.GET['content']
+    except KeyError:
+      newcontent='{}'
 
-    k=self.request.POST['key']
+    k=self.request.GET['key']
     debug(self,"sync")
     debug(self,pprint.pformat(k))
     debug(self,pprint.pformat(newcontent))
     debug(self,pprint.pformat(newusers))
     debug(self,pprint.pformat(newname))
     if k=="new":
-      obj=Drawing(name=newname,owner=user.email().lower(),shared=newusers,content=newcontent)
+      obj=Drawing(name=newname,owner=email,shared=newusers,content=newcontent)
       key=obj.put()
-      self.response.write('{"content":%s,"key":"%s"}'%(obj.content,obj.key.id()))
+      wrapwrite(self,'{"content":%s,"key":"%s"}'%(obj.content,obj.key.id()))
     else:
       key=ndb.Key('Drawing', int(k))
       obj=key.get()
       if not obj:
-        self.response.write('{"error":"not found"}')
-      if user.email().lower()==obj.owner or user.email().lower() in obj.shared:
+        wrapwrite(self,'{"error":"not found"}')
+	return
+      if not obj.shared:
+        obj.shared=[]
+      if email==obj.owner or email in obj.shared:
 	pass
       else:
-        self.response.write('{"error":"no access"}')
+        wrapwrite(self,json.dumps({'error':'no access'}))
 	return
       obj.content=newcontent
       obj.shared=newusers
       obj.name=newname
       obj.put()
-      self.response.write('{"content":%s,"key":"%s"}'%(obj.content,obj.key.id()))
+      wrapwrite(self,'{"content":%s,"key":"%s"}'%(obj.content,obj.key.id()))
 
 class DeleteHandler(webapp2.RequestHandler):
-  def post(self):
-    self.response.headers['Content-Type'] = 'application/json'   
+  def get(self):
+    self.response.headers['Content-Type'] = 'application/javascript'
     user = users.get_current_user()
-    k=self.request.POST['key']
+    if not user:
+      wrapwrite(self,json.dumps({'error':'not logged in at the sync server'}))
+      return
+    email=user.email().lower()
+    k=self.request.GET['key']
     debug(self,"delete")
     debug(self,pprint.pformat(k))
     key=ndb.Key('Drawing', int(k))
     obj=key.get()
     if not obj:
-      self.response.write('{"error":"not found"}')
-    if user.email().lower()==obj.owner:
+      wrapwrite(self,json.dumps({'error':'not found'}))
+      return
+    #only the owner can delete. But anyone can save an empty drawing, so
+    #this is for now pretty pointless. If some version control
+    #is implemented, this makes more sense.
+    if email==obj.owner:
       pass
     else:
-      self.response.write('{"error":"no access"}')
+      wrapwrite(self,json.dumps({'error':'no access'}))
       return
     key.delete()
-    self.response.write('{"key":"%s"}'%(obj.key.id()))
+    wrapwrite(self,'{"key":"%s"}'%(obj.key.id()))
 
 debugstate = os.environ.get('SERVER_SOFTWARE', '').startswith('Dev')
 
@@ -301,5 +345,6 @@ app = webapp2.WSGIApplication(routes=[
     ('/sync', SyncHandler),
     ('/delete', DeleteHandler),
     ('/test', TestHandler),
-    ('/', RootHandler),
+    ('/logout', LogoutHandler),
+    ('/login', LoginHandler),
 ], debug=debugstate)
