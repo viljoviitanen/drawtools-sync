@@ -32,7 +32,7 @@ import pprint
 class Drawing(ndb.Model):
   name = ndb.StringProperty()
   owner = ndb.StringProperty()
-  users = ndb.StringProperty(repeated=True)
+  shared = ndb.StringProperty(repeated=True)
   content = ndb.TextProperty()
   #XXX stamp is eventually used to remove old inactive entries
   stamp = ndb.DateTimeProperty(auto_now=True)
@@ -66,7 +66,7 @@ You are now logged in as %s.
 <script src='//ajax.googleapis.com/ajax/libs/jquery/2.0.3/jquery.min.js'></script>
 <script>
 function create() {
-  $('#item').html('Name: <input id=name value="New Drawing"></input> Content: <input id=content></input><input id=key type=hidden value="new"> <button onclick="save()">Save</button>')
+  $('#item').html('Name: <input id=name value="New Drawing"> Content: <input id=content> Shared with: <input id=shared value="[]"><input id=key type=hidden value="new"> <button onclick="save()">Save</button> <p> Note: shared emails format is a json array: <tt>["email.address@example.com","another.address@example.com"]</tt>')
 }
 
 function del() {
@@ -103,7 +103,8 @@ function save() {
     alert("content is not valid JSON")
     return
   }
-  $.post('/sync',{'key':key,'name':name,'content':content},function(data) {
+  shared=$('#shared').val()
+  $.post('/sync',{'key':key,'name':name,'content':content,'shared':shared},function(data) {
     if(data.error) {
        alert("Could not sync data: "+data.error)
        return
@@ -136,8 +137,9 @@ function load(key) {
     }
     if (!data.name) data.name="(unnamed)"
     
-    $('#item').html('Name: <input id=name value="'+escapehtml(data.name)+'"></input> Content: <input id=content></input><input id=key type=hidden value="'+key+'"> <button onclick="save()">Save</button><button onclick="del()">Delete</button>')
+    $('#item').html('Name: <input id=name value="'+escapehtml(data.name)+'"> Content: <input id=content> Shared with: <input id=shared><input id=key type=hidden value="'+key+'"> <button onclick="save()">Save</button><button onclick="del()">Delete</button> <p> Note: shared emails format is a json array: <tt>["email.address@example.com","another.address@example.com"]</tt>')
     $('#content').val(JSON.stringify(data.content))
+    $('#shared').val(JSON.stringify(data.shared))
     
   })
 }
@@ -205,7 +207,7 @@ class ListHandler(webapp2.RequestHandler):
     for dr in mydrawings:
       own.append({'key':dr.key.id(),'name':dr.name})
       
-    shareddrawings=Drawing.query(Drawing.users==user.email().lower())
+    shareddrawings=Drawing.query(Drawing.shared==user.email().lower())
     debug(self,"shared")
     debug(self,pprint.pformat(shareddrawings))
     shared=[]
@@ -223,8 +225,8 @@ class LoadHandler(webapp2.RequestHandler):
     if not obj:
       self.response.write('{"error":"not found"}')
     else:
-      if user.email().lower()==obj.owner or user.email().lower() in obj.users:
-        self.response.write('{"key":%s,"content":%s,"name":%s}'%(self.request.GET['key'],obj.content,json.dumps(obj.name)))
+      if user.email().lower()==obj.owner or user.email().lower() in obj.shared:
+        self.response.write('{"key":%s,"content":%s,"name":%s,"shared":%s}'%(self.request.GET['key'],obj.content,json.dumps(obj.name),json.dumps(obj.shared)))
       else:
         self.response.write('{"error":"no access"}')
         
@@ -238,9 +240,12 @@ class SyncHandler(webapp2.RequestHandler):
     except KeyError:
       newname=''
     try:
-      newusers=json.loads(self.request.POST['users'])
+      newusers=json.loads(self.request.POST['shared'])
     except KeyError:
       newusers=[]
+    except ValueError:
+      self.response.write('{"error":"invalid shared list"}')
+      return
     newcontent=self.request.POST['content']
 
     k=self.request.POST['key']
@@ -250,7 +255,7 @@ class SyncHandler(webapp2.RequestHandler):
     debug(self,pprint.pformat(newusers))
     debug(self,pprint.pformat(newname))
     if k=="new":
-      obj=Drawing(name=newname,owner=user.email().lower(),users=newusers,content=newcontent)
+      obj=Drawing(name=newname,owner=user.email().lower(),shared=newusers,content=newcontent)
       key=obj.put()
       self.response.write('{"content":%s,"key":"%s"}'%(obj.content,obj.key.id()))
     else:
@@ -258,13 +263,13 @@ class SyncHandler(webapp2.RequestHandler):
       obj=key.get()
       if not obj:
         self.response.write('{"error":"not found"}')
-      if user.email().lower()==obj.owner or user.email().lower() in obj.users:
+      if user.email().lower()==obj.owner or user.email().lower() in obj.shared:
 	pass
       else:
         self.response.write('{"error":"no access"}')
 	return
       obj.content=newcontent
-      obj.users=newusers
+      obj.shared=newusers
       obj.name=newname
       obj.put()
       self.response.write('{"content":%s,"key":"%s"}'%(obj.content,obj.key.id()))
