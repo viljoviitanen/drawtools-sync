@@ -59,23 +59,18 @@ class LoginHandler(webapp2.RequestHandler):
 
 class TestHandler(webapp2.RequestHandler):
   def get(self):
-    key=ndb.Key('Session', int(self.request.cookies.get('auth')))
-    obj=key.get()
-    if not obj:
-      self.response.headers['Content-Type'] = 'text/html'   
+    self.response.headers['Content-Type'] = 'text/html'   
+    user = users.get_current_user()
+    if not user:
       self.response.write('Please <a href="/login">log in</a> first.')
       return
-    email=obj.email
+    email=user.email()
 
     self.response.write("""
 <!--
 The following javascript example code here is public domain.
 -->
 You are now logged in as %s.
-<p>
-<!-- XXX -->
-<h1>NOT WORKING CURRENTLY</h1>
-This needs to be converted to use jsonp.
 <p>
 <script src='//ajax.googleapis.com/ajax/libs/jquery/2.0.3/jquery.min.js'></script>
 <script>
@@ -87,7 +82,11 @@ function del() {
   key=$('#key').val()
   name=$('#name').val()
   if (!confirm("Really delete " + escapehtml(name) + "?")) return
-  $.post('/delete',{'key':key},function(data) {
+  $.ajax({
+    dataType: "jsonp",
+    url: '/delete',
+    data: {'key':key},
+    success: function(data) {
     if(data.error) {
        alert("Could not delete: "+data.error)
        return
@@ -100,7 +99,7 @@ function del() {
     alert("delete successful")
     //reload...
     list()
-    
+    }
   })
 }
 
@@ -118,7 +117,11 @@ function save() {
     return
   }
   shared=$('#shared').val()
-  $.post('/sync',{'key':key,'name':name,'content':content,'shared':shared},function(data) {
+  $.ajax({
+    dataType: "jsonp",
+    url: '/sync',
+    data: {'key':key,'name':name,'content':content,'shared':shared},
+    success: function(data) {
     if(data.error) {
        alert("Could not sync data: "+data.error)
        return
@@ -135,12 +138,16 @@ function save() {
     alert("save successful")
     // save the key from the server, in case this was a new drawing!
     $('#key').val(data.key)
-    
+    }
   })
 }
 
 function load(key) {
-  $.getJSON('/load',{'key':key},function(data) {
+  $.ajax({
+    dataType: "jsonp",
+    url: '/load',
+    data: {'key':key },
+    success: function(data) {
     if(data.error) {
        alert("Could not load data: "+data.error)
        return
@@ -154,7 +161,7 @@ function load(key) {
     $('#item').html('Name: <input id=name value="'+escapehtml(data.name)+'"> Content: <input id=content> Shared with: <input id=shared><input id=key type=hidden value="'+key+'"> <button onclick="save()">Save</button><button onclick="del()">Delete</button> <p> Note: shared emails format is a json array: <tt>["email.address@example.com","another.address@example.com"]</tt>')
     $('#content').val(JSON.stringify(data.content))
     $('#shared').val(JSON.stringify(data.shared))
-    
+    }
   })
 }
 
