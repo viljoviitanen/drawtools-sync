@@ -42,6 +42,11 @@ def debug(self,s):
   if self.app.debug:
     logging.debug(s)
 
+class RootHandler(webapp2.RequestHandler):
+  def get(self):
+    self.response.headers['Content-Type'] = 'text/html'   
+    self.response.write('See the server source at <a href="https://github.com/viljoviitanen/drawtools-sync">https://github.com/viljoviitanen/drawtools-sync</a>')
+
 class LogoutHandler(webapp2.RequestHandler):
   def get(self):
     self.response.headers['Content-Type'] = 'text/html'   
@@ -354,4 +359,5 @@ app = webapp2.WSGIApplication(routes=[
     ('/test', TestHandler),
     ('/logout', LogoutHandler),
     ('/login', LoginHandler),
+    ('/', RootHandler),
 ], debug=debugstate)
