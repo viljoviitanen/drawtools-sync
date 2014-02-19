@@ -14,7 +14,6 @@ An installable version of the plugin is at
 https://viljoviitanen.nfshost.com/iitc/draw-tools-sync.user.js
 
 The plugin should work at least on Firefox and Greasemonkey, that's what the author uses.
-When writing this, you need to have the "test version" of the draw tools plugin installed (version 0.6.0 or newer) available at http://iitc.jonatkins.com/?page=test
 
 Quick instructions:
 
