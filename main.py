@@ -331,6 +331,9 @@ class DeleteHandler(webapp2.RequestHandler):
       return
     email=user.email().lower()
     k=self.request.GET['key']
+    if k=='new':
+      wrapwrite(self,json.dumps({'error':'drawing has not been saved yet?'}))
+      return
     debug(self,"delete")
     debug(self,pprint.pformat(k))
     key=ndb.Key('Drawing', int(k))
