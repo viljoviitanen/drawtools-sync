@@ -23,6 +23,7 @@ import json
 import time
 import logging
 import os
+import hashlib
 
 from google.appengine.api import users
 from google.appengine.ext import ndb
@@ -33,6 +34,7 @@ class Drawing(ndb.Model):
   name = ndb.StringProperty()
   owner = ndb.StringProperty()
   shared = ndb.StringProperty(repeated=True)
+  sharekey = ndb.StringProperty()
   content = ndb.TextProperty()
   #XXX stamp is eventually used to remove old inactive entries
   stamp = ndb.DateTimeProperty(auto_now=True)
@@ -147,6 +149,29 @@ function save() {
   })
 }
 
+function loadwithkey(sharekey) {
+  $.ajax({
+    dataType: "jsonp",
+    url: '/loadwithkey',
+    data: {'sharekey':sharekey },
+    success: function(data) {
+    if(data.error) {
+       alert("Could not load data: "+data.error)
+       return
+    }
+    if(!data.content) {
+       alert("Could not load data.")
+       return
+    }
+    if (!data.name) data.name="(unnamed)"
+    
+    $('#item').html('Name: <input id=name value="'+escapehtml(data.name)+'"> Content: <input id=content> Shared with: <input id=shared><input id=key type=hidden value="'+data.key+'"> Share Key: <input value="'+data.sharekey+'"> <button onclick="save()">Save</button><button onclick="del()">Delete</button> <p> Note: shared emails format is a json array: <tt>["email.address@example.com","another.address@example.com"]</tt>')
+    $('#content').val(JSON.stringify(data.content))
+    $('#shared').val(JSON.stringify(data.shared))
+    }
+  })
+}
+
 function load(key) {
   $.ajax({
     dataType: "jsonp",
@@ -163,7 +188,7 @@ function load(key) {
     }
     if (!data.name) data.name="(unnamed)"
     
-    $('#item').html('Name: <input id=name value="'+escapehtml(data.name)+'"> Content: <input id=content> Shared with: <input id=shared><input id=key type=hidden value="'+key+'"> <button onclick="save()">Save</button><button onclick="del()">Delete</button> <p> Note: shared emails format is a json array: <tt>["email.address@example.com","another.address@example.com"]</tt>')
+    $('#item').html('Name: <input id=name value="'+escapehtml(data.name)+'"> Content: <input id=content> Shared with: <input id=shared><input id=key type=hidden value="'+data.key+'"> Share Key: <input value="'+data.sharekey+'"> <button onclick="save()">Save</button><button onclick="del()">Delete</button> <p> Note: shared emails format is a json array: <tt>["email.address@example.com","another.address@example.com"]</tt>')
     $('#content').val(JSON.stringify(data.content))
     $('#shared').val(JSON.stringify(data.shared))
     }
@@ -215,6 +240,7 @@ function escapehtml(s) {
 </script>
 <button onclick="create()">Create new</button>
 <button onclick="list()">Get List</button>
+<input id="key"><button onclick="loadwithkey(document.getElementById('key').value)">Get via share key</button>
 <div id=list></div>
 <div id=item></div>
 
@@ -249,6 +275,36 @@ class ListHandler(webapp2.RequestHandler):
     wrapwrite(self,json.dumps({'own':own,'shared':shared}))
       
 
+class LoadWithKeyHandler(webapp2.RequestHandler):
+  def get(self):
+    self.response.headers['Content-Type'] = 'application/javascript'
+    user = users.get_current_user()
+    if not user:
+      wrapwrite(self,json.dumps({'error':'not logged in at the sync server'}))
+      return
+    email=user.email().lower()
+    sharekey=self.request.GET['sharekey'].rstrip() #guard against whitespace after copypaste
+    if len(sharekey) != 32:
+      wrapwrite(self,json.dumps({'error':'invalid key'}))
+      return
+    mydrawings=Drawing.query(Drawing.sharekey==sharekey).fetch()
+    if len(mydrawings) == 0:
+      wrapwrite(self,json.dumps({'error':'sharing key not found'}))
+      return
+      
+    key=ndb.Key('Drawing', mydrawings[0].key.id())
+    obj=key.get()
+    if not obj:
+      wrapwrite(self,json.dumps({'error':'internal error'}))
+    else:
+      if email==obj.owner or email in obj.shared:
+        pass
+      else:
+        obj.shared.append(email)
+        key=obj.put()
+      wrapwrite(self,'{"key":%s,"content":%s,"name":%s,"shared":%s,"sharekey":%s}'%(key.id(),obj.content,json.dumps(obj.name),json.dumps(obj.shared),json.dumps(obj.sharekey)))
+        
+
 class LoadHandler(webapp2.RequestHandler):
   def get(self):
     self.response.headers['Content-Type'] = 'application/javascript'
@@ -263,7 +319,7 @@ class LoadHandler(webapp2.RequestHandler):
       wrapwrite(self,json.dumps({'error':'not found'}))
     else:
       if email==obj.owner or email in obj.shared:
-        wrapwrite(self,'{"key":%s,"content":%s,"name":%s,"shared":%s}'%(self.request.GET['key'],obj.content,json.dumps(obj.name),json.dumps(obj.shared)))
+        wrapwrite(self,'{"key":%s,"content":%s,"name":%s,"shared":%s,"sharekey":%s}'%(self.request.GET['key'],obj.content,json.dumps(obj.name),json.dumps(obj.shared),json.dumps(obj.sharekey)))
       else:
         wrapwrite(self,json.dumps({'error':'no access'}))
         
@@ -300,7 +356,8 @@ class SyncHandler(webapp2.RequestHandler):
     debug(self,pprint.pformat(newusers))
     debug(self,pprint.pformat(newname))
     if k=="new":
-      obj=Drawing(name=newname,owner=email,shared=newusers,content=newcontent)
+      newsharekey=hashlib.md5("random9boGJFy1mY4nL56padding"+str(time.time)+os.urandom(10)).hexdigest()
+      obj=Drawing(name=newname,owner=email,shared=newusers,content=newcontent,sharekey=newsharekey)
       key=obj.put()
       wrapwrite(self,'{"content":%s,"key":"%s"}'%(obj.content,obj.key.id()))
     else:
@@ -357,6 +414,7 @@ debugstate = os.environ.get('SERVER_SOFTWARE', '').startswith('Dev')
 app = webapp2.WSGIApplication(routes=[
     ('/list', ListHandler),
     ('/load', LoadHandler),
+    ('/loadwithkey', LoadWithKeyHandler),
     ('/sync', SyncHandler),
     ('/delete', DeleteHandler),
     ('/test', TestHandler),
