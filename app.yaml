@@ -21,6 +21,10 @@ handlers:
   static_files: favicon.ico
   upload: favicon\.ico
 
+- url: /zpipe.min.js
+  static_files: zpipe.min.js
+  upload: zpipe\.min\.js
+
 - url: /login
   script: main.app
   login: required

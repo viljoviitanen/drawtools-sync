@@ -24,6 +24,8 @@ import time
 import logging
 import os
 import hashlib
+import zlib
+import base64
 
 from google.appengine.api import users
 from google.appengine.ext import ndb
@@ -80,9 +82,10 @@ The following javascript example code here is public domain.
 You are now logged in as %s.
 <p>
 <script src='//ajax.googleapis.com/ajax/libs/jquery/2.0.3/jquery.min.js'></script>
+<script src='zpipe.min.js'></script>
 <script>
 function create() {
-  $('#item').html('Name: <input id=name value="New Drawing"> Content: <input id=content> Shared with: <input id=shared value="[]"><input id=key type=hidden value="new"> <button onclick="save()">Save</button> <p> Note: shared emails format is a json array: <tt>["email.address@example.com","another.address@example.com"]</tt>')
+  $('#item').html('Name: <input id=name value="New Drawing"> Content: <input id=content> Shared with: <input id=shared value="[]"><input id=key type=hidden> <button onclick="save()">Save</button> <p> Note: shared emails format is a json array: <tt>["email.address@example.com","another.address@example.com"]</tt>')
 }
 
 function del() {
@@ -112,6 +115,9 @@ function del() {
 
 function save() {
   key=$('#key').val()
+  if (key=='') {
+    key='new'
+  }
   name=$('#name').val()
   content=$('#content').val()
   try {
@@ -124,10 +130,17 @@ function save() {
     return
   }
   shared=$('#shared').val()
+  //base64-encoded zlib-deflated data.
+  c=btoa(zpipe.deflate(JSON.stringify({'key':key,'name':name,'content':content,'shared':shared})))
+  //jsonp calls are GET calls and the url must not be greater than about 2k bytes.
+  if(c.length > 1888) {
+    alert("Sorry, too much data in the drawing!"+c.length)
+    return
+  }
   $.ajax({
     dataType: "jsonp",
     url: '/sync',
-    data: {'key':key,'name':name,'content':content,'shared':shared},
+    data: {'c':c},
     success: function(data) {
     if(data.error) {
        alert("Could not sync data: "+data.error)
@@ -165,7 +178,7 @@ function loadwithkey(sharekey) {
     }
     if (!data.name) data.name="(unnamed)"
     
-    $('#item').html('Name: <input id=name value="'+escapehtml(data.name)+'"> Content: <input id=content> Shared with: <input id=shared><input id=key type=hidden value="'+data.key+'"> Share Key: <input value="'+data.sharekey+'"> <button onclick="save()">Save</button><button onclick="del()">Delete</button> <p> Note: shared emails format is a json array: <tt>["email.address@example.com","another.address@example.com"]</tt>')
+    $('#item').html('Name: <input id=name value="'+escapehtml(data.name)+'"> Content: <input id=content> Shared with: <input id=shared><input id=key type=hidden value="'+data.key+'"> Share Key: <input id=sharekey value="'+data.sharekey+'"> <button onclick="save()">Save</button><button onclick="del()">Delete</button> <p> Note: shared emails format is a json array: <tt>["email.address@example.com","another.address@example.com"]</tt>')
     $('#content').val(JSON.stringify(data.content))
     $('#shared').val(JSON.stringify(data.shared))
     }
@@ -188,7 +201,7 @@ function load(key) {
     }
     if (!data.name) data.name="(unnamed)"
     
-    $('#item').html('Name: <input id=name value="'+escapehtml(data.name)+'"> Content: <input id=content> Shared with: <input id=shared><input id=key type=hidden value="'+data.key+'"> Share Key: <input value="'+data.sharekey+'"> <button onclick="save()">Save</button><button onclick="del()">Delete</button> <p> Note: shared emails format is a json array: <tt>["email.address@example.com","another.address@example.com"]</tt>')
+    $('#item').html('Name: <input id=name value="'+escapehtml(data.name)+'"> Content: <input id=content> Shared with: <input id=shared><input id=key type=hidden value="'+data.key+'"> Share Key: <input id=sharekey value="'+data.sharekey+'"> <button onclick="save()">Save</button><button onclick="del()">Delete</button> <p> Note: shared emails format is a json array: <tt>["email.address@example.com","another.address@example.com"]</tt>')
     $('#content').val(JSON.stringify(data.content))
     $('#shared').val(JSON.stringify(data.shared))
     }
@@ -283,7 +296,7 @@ class LoadWithKeyHandler(webapp2.RequestHandler):
       wrapwrite(self,json.dumps({'error':'not logged in at the sync server'}))
       return
     email=user.email().lower()
-    sharekey=self.request.GET['sharekey'].rstrip() #guard against whitespace after copypaste
+    sharekey=self.request.GET['sharekey'].rstrip().lower() #guard against whitespace after copypaste
     if len(sharekey) != 32:
       wrapwrite(self,json.dumps({'error':'invalid key'}))
       return
@@ -334,22 +347,62 @@ class SyncHandler(webapp2.RequestHandler):
       return
     email=user.email().lower()
     try:
-      newname=self.request.GET['name']
+      c=self.request.GET['c']
+      #If c parameter does not exist, data is in legacy uncompressed format
+      try:
+        j=json.loads(zlib.decompress(base64.b64decode(c)))
+      except zlib.error:
+        wrapwrite(self,'{"error":"server got invalid compressed data"}')
+        return
+      except TypeError:
+        wrapwrite(self,'{"error":"server probably got invalid base64 data"}')
+        return
+      except ValueError:
+        wrapwrite(self,'{"error":"server probably got invalid json data"}')
+	return
+      try:
+        newname=j['name']
+      except KeyError:
+        newname=''
+      try:
+        newusers=json.loads(j['shared'])
+      except KeyError:
+        newusers=[]
+      except ValueError:
+        wrapwrite(self,'{"error":"invalid shared list"}')
+        return
+      try:
+        newcontent=j['content']
+      except KeyError:
+        newcontent='{}'
+      try:
+        k=j['key']
+      except KeyError:
+        wrapwrite(self,'{"error":"server did not get key"}')
+        return
+    #uncompressed data from older versions of the plugin
     except KeyError:
-      newname=''
-    try:
-      newusers=json.loads(self.request.GET['shared'])
-    except KeyError:
-      newusers=[]
-    except ValueError:
-      wrapwrite(self,'{"error":"invalid shared list"}')
-      return
-    try:
-      newcontent=self.request.GET['content']
-    except KeyError:
-      newcontent='{}'
+      try:
+        newname=self.request.GET['name']
+      except KeyError:
+        newname=''
+      try:
+        newusers=json.loads(self.request.GET['shared'])
+      except KeyError:
+        newusers=[]
+      except ValueError:
+        wrapwrite(self,'{"error":"invalid shared list"}')
+        return
+      try:
+        newcontent=self.request.GET['content']
+      except KeyError:
+        newcontent='{}'
+      try:
+        k=self.request.GET['key']
+      except KeyError:
+        wrapwrite(self,'{"error":"server did not get key"}')
+        return
 
-    k=self.request.GET['key']
     debug(self,"sync")
     debug(self,pprint.pformat(k))
     debug(self,pprint.pformat(newcontent))
