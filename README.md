@@ -1,5 +1,10 @@
+Development has been stopped
+
+Plugin development has been stopped in 7/2014, sync server has been removed and installable plugin removed.
+
+Old readme is below.
+---
 drawtools-sync
-==============
 
 IITC drawtools plugin sync server for google appengine.
 
